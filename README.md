@@ -4,14 +4,14 @@
 
 ---
 **Work Distribution**
-| Task / Feature | Member 1 | Member 2 | Member 3 | Member 4 |
+| Task / Feature | Member 1 | Marco | Member 3 | Member 4 |
 | --- | --- | --- | --- | --- |
-| UDP socket handling, message framing, and per-peer channel management | | | | |
-| Lobby Phase: presence gossip, roster convergence, session formation | | | | |
+| UDP socket handling, message framing, and per-peer channel management | |✅| | |
+| Lobby Phase: presence gossip, roster convergence, session formation | |✅| | |
 | Randomness Ceremony & Ring/Wonder/Guild derivation (commit-reveal) | | | | |
 | Draft Turn engine (commit-reveal, hand pass, all Ages and turns) | | | | |
 | Resource Trading logic | | | | |
-| Military Resolution & End-of-Game scoring consensus | | | | |
+| Military Resolution & End-of-Game scoring consensus | |✅| | |
 | Peer disconnection consensus & error handling | | | | |
 | Message serialisation/deserialisation (all message types) | | | | |
 | Verbose mode (message logging, toggle on/off) | | | | |
