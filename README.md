@@ -5,7 +5,7 @@
 ---
 **Work Distribution**
 | Task / Feature | Member 1 | Marco | Member 3 | Member 4 |
-| --- | --- | --- | --- | --- |
+| --- | --- | :---: | --- | --- |
 | UDP socket handling, message framing, and per-peer channel management | |✅| | |
 | Lobby Phase: presence gossip, roster convergence, session formation | |✅| | |
 | Randomness Ceremony & Ring/Wonder/Guild derivation (commit-reveal) | | | | |
