@@ -10,10 +10,10 @@
 | Lobby Phase: presence gossip, roster convergence, session formation | |✅| | |
 | Randomness Ceremony & Ring/Wonder/Guild derivation (commit-reveal) | | | | |
 | Draft Turn engine (commit-reveal, hand pass, all Ages and turns) | | | | |
-| Resource Trading logic | | | | |
+| Resource Trading logic |✅ | | | |
 | Military Resolution & End-of-Game scoring consensus | |✅| | |
-| Peer disconnection consensus & error handling | | | | |
-| Message serialisation/deserialisation (all message types) | | | | |
+| Peer disconnection consensus & error handling |✅ | | | |
+| Message serialisation/deserialisation (all message types) |✅ | | | |
 | Verbose mode (message logging, toggle on/off) | | | | |
 | Testing & interoperability | | | | |
 | README / documentation / AI disclosure | | | |✅|
