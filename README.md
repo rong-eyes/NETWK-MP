@@ -16,10 +16,10 @@
 | Message serialisation/deserialisation (all message types) | | | | |
 | Verbose mode (message logging, toggle on/off) | | | | |
 | Testing & interoperability | | | | |
-| README / documentation / AI disclosure | | | | |
+| README / documentation / AI disclosure | | | |✅|
 
 ---
 **AI Usage**
-
+AI tools, specifically Gemini, were used to understand some technical jargon in the RFC as well as certain functions and integer constants from the socket library in Python.
 ---
 **Limitations and Deviations From the RFC**
