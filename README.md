@@ -6,7 +6,7 @@
 **Work Distribution**
 | Task / Feature | Diego | Marco | Samira | Yreana |
 | --- | --- | :---: | --- | --- |
-| UDP socket handling, message framing, and per-peer channel management | |✅| | |
+| UDP socket handling, message framing, and per-peer channel management | |✅| |✅|
 | Lobby Phase: presence gossip, roster convergence, session formation | |✅| | |
 | Randomness Ceremony & Ring/Wonder/Guild derivation (commit-reveal) | | | | |
 | Draft Turn engine (commit-reveal, hand pass, all Ages and turns) | | | | |
