@@ -9,6 +9,15 @@ MAX_DATAGRAM = 1200
 MIN_PLAYERS = 3
 MAX_PLAYERS = 7
 
+HEADER = struct.Struct("!BBBB16sHHII")
+HEADER_SIZE = HEADER.size
+assert HEADER_SIZE == 32
+
+FLAG_ACK = 0x01
+FLAG_RETRANSMIT = 0x02
+
+TYPE_BARE_ACK = 0x00
+
 class MsgType(enum.IntEnum):
     LOBBY_PRESENCE = 0x01
     LOBBY_LEAVE = 0x02
@@ -35,4 +44,69 @@ class MsgType(enum.IntEnum):
     DISCONNECT = 0x17
     DIRECT_MESSAGE = 0x18
     GROUP_MESSAGE = 0x19
+
+M = MsgType
+LOBBY_TYPES = frozenset({M.LOBBY_PRESENCE, M.LOBBY_LEAVE, M.LOBBY_START_VOTE, M.LOBBY_START_ACK})
+
+UNRELIABLE_TYPES = LOBBY_TYPES | {M.PING, M.PONG, M.DISCONNECT}
+
+DIRECTED_TYPES = frozenset({M.HELLO, M.HELLO_ACK, M.HAND_PASS, M.RESOURCE_QUERY, M.RESOURCE_OFFER,
+                            M.RESOURCE_BUY, M.PING, M.PONG, M.DIRECT_MESSAGE})
+
+class Timing:
+    t_ack_delay: float = 0.050
+    rto_init: float = 0.200
+    rto_max: float = 3.2
+    retry_max: int = 6
+    window: int = 4                     
+    t_join_timeout: float = 10.0
+    t_seed_timeout: float = 10.0
+    t_turn_timeout: float = 8.0
+    t_resource_timeout: float = 5.0
+    t_score_timeout: float = 10.0
+    t_lobby_announce_interval: float = 2.0
+    t_lobby_stale: float = 6.0
+    t_lobby_quiet: float = 3.0
+    t_lobby_timeout: float = 120.0
+
+class PeerInfo:
+    peer_id: int
+    display_name: str
+    host: str
+    port: int
+
+
+class MalformedPacket(Exception):
+    """Datagram that cannot be parsed"""
+
+class Packet:
+    msg_type: int
+    session_id: bytes
+    sender: int
+    seq: int = 0
+    ack: int = 0
+    flags: int = 0
+    payload: Optional[dict] = field(default_factory=dict)   # None = no payload bytes (bare ACK)
+    version: int = VERSION
+
+    def is_ack(self) -> bool:
+        return bool(self.flags & FLAG_ACK)
+
+    def is_retransmit(self) -> bool:
+        return bool(self.flags & FLAG_RETRANSMIT)
+
+def lobby_id_from_room(room_code: str) -> bytes:
+    return hashlib.sha256(room_code.encode("utf-8")).digest()[:16]
+
+
+def encode(pkt: Packet) -> bytes:
+    body = b"" if pkt.payload is None else json.dumps(
+        pkt.payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    data = HEADER.pack(pkt.version, int(pkt.msg_type), pkt.flags & 0xFF, 0, pkt.session_id,
+                       pkt.sender, len(body), pkt.seq, pkt.ack) + body
+    if len(data) > MAX_DATAGRAM:
+        raise ValueError(f"datagram is {len(data)} bytes, limit is {MAX_DATAGRAM}")
+    return data
+
+
 
