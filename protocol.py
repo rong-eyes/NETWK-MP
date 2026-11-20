@@ -1,6 +1,11 @@
+from __future__ import annotations
+
 import enum
+import hashlib
 import json
 import struct
+from dataclasses import dataclass, field
+from typing import Optional
 
 VERSION = 1
 LOBBY_PORT = 7777
@@ -89,9 +94,11 @@ class Packet:
     payload: Optional[dict] = field(default_factory=dict)   # None = no payload bytes (bare ACK)
     version: int = VERSION
 
+    @property
     def is_ack(self) -> bool:
         return bool(self.flags & FLAG_ACK)
-
+    
+    @property
     def is_retransmit(self) -> bool:
         return bool(self.flags & FLAG_RETRANSMIT)
 
@@ -107,6 +114,32 @@ def encode(pkt: Packet) -> bytes:
     if len(data) > MAX_DATAGRAM:
         raise ValueError(f"datagram is {len(data)} bytes, limit is {MAX_DATAGRAM}")
     return data
+
+def decode(data: bytes) -> Packet:
+    if len(data) < HEADER_SIZE:
+        raise MalformedPacket(f"datagram too short ({len(data)} bytes)")
+    ver, mtype, flags, _reserved, sid, sender, plen, seq, ack = HEADER.unpack_from(data)
+    if ver != VERSION:
+        raise MalformedPacket(f"unsupported version {ver}")
+    if plen != len(data) - HEADER_SIZE:
+        raise MalformedPacket(f"payload length {plen} != {len(data) - HEADER_SIZE} bytes present")
+    if mtype == TYPE_BARE_ACK:
+        if not flags & FLAG_ACK or plen:
+            raise MalformedPacket("type 0x00 must be an ACK-flagged datagram with empty payload")
+        return Packet(TYPE_BARE_ACK, sid, sender, seq, ack, flags, None, ver)
+    try:
+        msg_type = MsgType(mtype)
+    except ValueError:
+        raise MalformedPacket(f"unknown message type 0x{mtype:02x}") from None
+    try:
+        payload = json.loads(data[HEADER_SIZE:].decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise MalformedPacket(f"bad JSON payload: {exc}") from None
+    if not isinstance(payload, dict):
+        raise MalformedPacket("payload is not a JSON object")
+    return Packet(msg_type, sid, sender, seq, ack, flags, payload, ver)
+
+
 
 
 
