@@ -1,6 +1,9 @@
 import dataclasses
 import threading
 import time
+from collections import OrderedDict, deque
+from dataclasses import dataclass
+from typing import Callable, Optional
 
 from protocol import (FLAG_ACK, FLAG_RETRANSMIT, TYPE_BARE_ACK, UNRELIABLE_TYPES, MsgType, Packet,
                       Timing)
@@ -38,7 +41,6 @@ class Channel:
         self.stats = {"sent": 0, "retransmits": 0, "dups_dropped": 0, "bare_acks": 0, "buffered_ooo": 0}
 
     def send(self, msg_type: MsgType, payload: dict) -> bool:
-        """Queue a reliable message. Returns False if the channel has permanently failed."""
         if msg_type in UNRELIABLE_TYPES:
             raise ValueError(f"{msg_type.name} is not carried by the reliability layer")
         with self._lock:
@@ -119,6 +121,43 @@ class Channel:
         self.stats["bare_acks"] += 1
         self._transmit(Packet(TYPE_BARE_ACK, self.session_id, self.my_id, 0, self.last_delivered,
                               FLAG_ACK, None))
+        
+    def tick(self, now: Optional[float] = None) -> None:
+        now = self._clock() if now is None else now
+        failed_now = False
+        with self._lock:
+            if self.failed:
+                return
+            if self._ack_due is not None and now >= self._ack_due:
+                self._send_bare_ack()
+            expired = [p for p in self.inflight.values() if p.deadline <= now]
+            if expired:
+                self.timeouts += 1
+                if self.timeouts >= self.t.retry_max:
+                    self.failed = True
+                    failed_now = True
+                    self.inflight.clear()
+                    self.backlog.clear()
+                else:
+                    self.rto = min(self.rto * 2, self.t.rto_max)  
+                    for p in expired:
+                        self._retransmit(p, now)
+        if failed_now and self._on_failed:     
+            self._on_failed(self.peer_id)
 
+    def _retransmit(self, p: _Pending, now: float) -> None:
+        flags = FLAG_RETRANSMIT | (FLAG_ACK if self.last_delivered > 0 else 0)
+        self._transmit(dataclasses.replace(p.pkt, flags=flags, ack=self.last_delivered))
+        p.deadline = now + self.rto
+        self._ack_due = None
+        self.stats["retransmits"] += 1
+
+    def note_rtt(self, rtt: float) -> None:
+        with self._lock:
+            self.srtt = rtt if self.srtt is None else 0.875 * self.srtt + 0.125 * rtt
+            floor = self.t.rto_init / 2
+            self.base_rto = min(max(3 * self.srtt, floor), self.t.rto_max)
+            if self.timeouts == 0:
+                self.rto = self.base_rto
     
 
