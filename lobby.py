@@ -123,3 +123,92 @@ class Lobby:
 
     def _send_ack(self, h: str) -> None:
         self._send(MsgType.LOBBY_START_ACK, {"participants_hash": h, "lobby_peer_id": self.my_id})
+
+    def _recv_once(self) -> None:
+        try:
+            data, addr = self.sock.recvfrom(2048)
+        except (socket.timeout, ConnectionResetError, OSError):
+            return
+        if self.drop_rate and self._rng.random() < self.drop_rate:
+            return
+        try:
+            pkt = decode(data)
+        except MalformedPacket as exc:
+            verbose.info(f"MALFORMED lobby datagram from {addr[0]}: {exc}")
+            return
+        if pkt.session_id != self.lobby_id or pkt.msg_type not in LOBBY_TYPES or pkt.sender != LOBBY_SENTINEL:
+            return                                       
+        verbose.packet("RECV", pkt, f"{addr[0]}")
+        now, body = time.monotonic(), pkt.payload or {}
+        if pkt.msg_type == MsgType.LOBBY_START_VOTE:
+            self._on_vote(body, now)
+        elif self._frozen:
+            return                                       
+        elif pkt.msg_type == MsgType.LOBBY_PRESENCE:
+            self._on_presence(body, addr, now)
+        elif pkt.msg_type == MsgType.LOBBY_LEAVE:
+            pid = body.get("lobby_peer_id")
+            if pid in self.roster and pid != self.my_id:
+                del self.roster[pid]
+                self._roster_changed(now)
+        elif pkt.msg_type == MsgType.LOBBY_START_ACK:
+            self._on_ack(body, addr, now)
+
+    def _on_presence(self, body: dict, addr: tuple, now: float) -> None:
+        pid, name, host, port = (body.get(k) for k in ("lobby_peer_id", "display_name", "host", "port"))
+        if (not _is_hex(pid, 32) or pid == self.my_id or not isinstance(name, str)
+                or not isinstance(port, int) or isinstance(port, bool) or not 0 < port < 65536):
+            return
+        if not isinstance(host, str) or host in ("", "0.0.0.0"):
+            host = addr[0]
+        entry = self.roster.get(pid)
+        if entry is None:
+            self.roster[pid] = _Entry(name, host, port, now)
+            self._roster_changed(now)
+        else:
+            entry.display_name, entry.host, entry.port, entry.last_seen = name, host, port, now
+
+    def _on_vote(self, body: dict, now: float) -> None:
+        parts = body.get("participants")
+        if not isinstance(parts, list) or sorted(parts) != sorted(self.roster):
+            return       
+        h = participants_hash(parts)
+        self.acks.setdefault(h, {})[self.my_id] = now
+        self._send_ack(h)                               
+
+    def _on_ack(self, body: dict, addr: tuple, now: float) -> None:
+        h, sender = body.get("participants_hash"), body.get("lobby_peer_id")
+        if not _is_hex(h, 64):
+            return
+        if not _is_hex(sender, 32):                      
+            by_ip = [p for p, e in self.roster.items() if e.host == addr[0]]
+            if len(by_ip) != 1:                          
+                verbose.info(f"cannot tell who sent LOBBY_START_ACK from {addr[0]}; ignored")
+                return
+            sender = by_ip[0]
+        self.acks.setdefault(h, {})[sender] = now
+
+    
+    def _roster_changed(self, now: float) -> None:
+        self.last_change = now
+        self._proposal = None                            
+        names = ", ".join(e.display_name for e in self.roster.values())
+        self._status(f"{len(self.roster)} player(s) in lobby: {names}")
+
+    def _prune(self, now: float) -> None:
+        stale = [p for p, e in self.roster.items() if p != self.my_id and now - e.last_seen > self.t.t_lobby_stale]
+        for p in stale:
+            del self.roster[p]
+        if stale:
+            self._roster_changed(now)
+
+    def _drive_proposals(self, now: float) -> None:
+        if not self.min_players <= len(self.roster) <= self.max_players:
+            self._proposal = None
+            return
+        ids = sorted(self.roster)
+        if self._proposal is None:
+            if self._forced or now - self.last_change >= self.t.t_lobby_quiet:  
+                self._send_vote(ids, participants_hash(ids), now)
+        elif now - self._proposal[1] >= self.t.t_lobby_quiet:                   
+            self._send_vote(ids, self._proposal[0], now)
