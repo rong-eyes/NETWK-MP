@@ -212,3 +212,34 @@ class Lobby:
                 self._send_vote(ids, participants_hash(ids), now)
         elif now - self._proposal[1] >= self.t.t_lobby_quiet:                   
             self._send_vote(ids, self._proposal[0], now)
+
+    def _try_close(self, now: float) -> Optional[LobbyResult]:
+        ids = sorted(self.roster)
+        if not self.min_players <= len(ids) <= self.max_players:
+            return None
+        got = {p for p, ts in self.acks.get(participants_hash(ids), {}).items()
+               if p == self.my_id or now - ts <= self.ack_ttl}
+        if not set(ids) <= got:
+            return None
+        
+        manifest = {i + 1: PeerInfo(i + 1, self.roster[p].display_name, self.roster[p].host, self.roster[p].port)
+                    for i, p in enumerate(ids)}
+        self._frozen = True
+        self._status(f"lobby closed with {len(ids)} players; you are peer {ids.index(self.my_id) + 1}")
+        return LobbyResult(self.lobby_id, ids.index(self.my_id) + 1, manifest)
+
+    def _start_linger(self) -> None:
+        self._lingering = True
+        threading.Thread(target=self._linger, daemon=True).start()
+
+    def _linger(self) -> None:
+        end, next_announce = time.monotonic() + self.linger, 0.0
+        while time.monotonic() < end:
+            if time.monotonic() >= next_announce:
+                self._announce()
+                next_announce = time.monotonic() + self.t.t_lobby_announce_interval
+            self._recv_once()
+        self.sock.close()
+
+    def _status(self, text: str) -> None:
+        self.on_status(text)
