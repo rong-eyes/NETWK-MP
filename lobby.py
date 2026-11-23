@@ -6,6 +6,7 @@ import socket
 import threading
 import time
 from dataclasses import dataclass
+from typing import Callable, Optional
 
 import verbose
 from node import open_lobby_socket
