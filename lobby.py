@@ -1,9 +1,16 @@
+import hashlib
+import json
+import random
+import secrets
 import socket
 import threading
 import time
 from dataclasses import dataclass
 
 import verbose
+from node import open_lobby_socket
+from protocol import (LOBBY_PORT, LOBBY_SENTINEL, LOBBY_TYPES, MAX_PLAYERS, MIN_PLAYERS, MalformedPacket,
+                      MsgType, Packet, PeerInfo, Timing, decode, encode, lobby_id_from_room)
 
 _HEX = set("0123456789abcdef")
 
@@ -54,3 +61,64 @@ class Lobby:
         self.linger = 2 * self.t.t_lobby_quiet
         self._frozen = False
         self._lingering = False
+
+    def run(self, cancel: Optional[threading.Event] = None) -> Optional[LobbyResult]:
+        start = time.monotonic()
+        next_announce = start
+        self._status(f"searching for players... (1/{self.min_players} needed)")
+        try:
+            while True:
+                now = time.monotonic()
+                if cancel is not None and cancel.is_set():
+                    return self._give_up("cancelled")
+                if now >= next_announce:
+                    self._announce()
+                    next_announce = now + self.t.t_lobby_announce_interval
+                self._prune(now)
+                self._recv_once()
+                now = time.monotonic()
+                result = self._try_close(now)
+                if result is not None:
+                    self._start_linger()
+                    return result
+                self._drive_proposals(now)
+                if now - start >= self.t.t_lobby_timeout:               
+                    if not self._forced:
+                        if len(self.roster) < self.min_players:
+                            return self._give_up("not enough players were found")
+                        self._forced, self._forced_at, self._proposal = True, now, None
+                        self._status("timeout reached: forcing a final vote on the current roster")
+                    elif now - self._forced_at >= self.forced_wait:
+                        return self._give_up("the forced vote did not reach agreement")
+        except KeyboardInterrupt:
+            return self._give_up("cancelled")
+        finally:
+            if not self._lingering:
+                self.sock.close()
+
+    def _give_up(self, reason: str) -> None:
+        self._send(MsgType.LOBBY_LEAVE, {"lobby_peer_id": self.my_id})
+        self._status(f"left the lobby: {reason}")
+        return None
+
+    def _send(self, msg_type: MsgType, payload: dict) -> None:
+        pkt = Packet(msg_type, self.lobby_id, LOBBY_SENTINEL, 0, 0, 0, payload)
+        verbose.packet("SEND", pkt, "broadcast")
+        try:
+            self.sock.sendto(encode(pkt), self.bcast)
+        except OSError as exc:
+            verbose.info(f"lobby broadcast failed: {exc}")
+
+    def _announce(self) -> None:
+        me = self.roster[self.my_id]
+        me.last_seen = time.monotonic()
+        self._send(MsgType.LOBBY_PRESENCE, {"lobby_peer_id": self.my_id, "display_name": me.display_name,
+                                            "host": me.host, "port": me.port})
+
+    def _send_vote(self, ids: list, h: str, now: float) -> None:
+        self._proposal = (h, now)
+        self.acks.setdefault(h, {})[self.my_id] = now    
+        self._send(MsgType.LOBBY_START_VOTE, {"participants": ids})
+
+    def _send_ack(self, h: str) -> None:
+        self._send(MsgType.LOBBY_START_ACK, {"participants_hash": h, "lobby_peer_id": self.my_id})
