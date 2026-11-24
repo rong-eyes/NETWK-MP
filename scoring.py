@@ -183,4 +183,65 @@ def score_seat(seat: int, views: dict, db: CardDB, ring: list) -> ScoreBreakdown
         commercial=sum(_rule_vp(c, seat, views, db, ring) for c in cards if c.color == "YELLOW"),
         guilds=sum(_rule_vp(c, seat, views, db, ring) for c in cards if c.color == "PURPLE"),
     )
-    
+
+def score_all(views: dict, db: CardDB, ring: list) -> dict:
+    return {s: score_seat(s, views, db, ring) for s in ring}
+
+
+def build_game_end(scores: dict, coins: dict) -> dict:
+    seats = sorted(scores)
+    winner = min(seats, key=lambda s: (-scores[s].total, -coins[s], s))
+    return {"winner_seat": winner,
+            "final_scores": [{"seat": s, "total": scores[s].total, "coins": coins[s]} for s in seats]}
+
+
+class ScoreConsensus:
+    def __init__(self, expected: dict, coins: dict, live_seats, timeout: float,
+                 clock: Callable[[], float] = time.monotonic):
+        self.expected, self.coins = dict(expected), dict(coins)    
+        self.live = set(live_seats)
+        self.timeout, self._clock = timeout, clock
+        self.started = clock()
+        self.reports: dict = {}
+        self.disputes: dict = {}     
+        self.dropped: list = []       
+        self._sent = False
+
+    def on_report(self, seat: int, payload: dict) -> Optional[Violation]:
+        if seat not in self.live:
+            return None
+        try:
+            reported = ScoreBreakdown.from_payload(payload)
+        except ValueError as exc:
+            return Violation("MALFORMED_MESSAGE", seat, str(exc))
+        if payload.get("total") != reported.total:
+            self.disputes[seat] = {"total": (reported.total, payload.get("total"))}
+            return Violation("SCORE_MISMATCH", seat,
+                             f"total {payload.get('total')} != sum of categories {reported.total}")
+        self.reports[seat] = reported
+        delta = self.expected[seat].diff(reported)
+        if delta:                     
+            self.disputes[seat] = delta
+            return Violation("SCORE_MISMATCH", seat, "; ".join(
+                f"{c}: we computed {a}, seat reported {b}" for c, (a, b) in delta.items()))
+        self.disputes.pop(seat, None)
+        return None
+
+    def expire(self) -> list:
+        if self._clock() - self.started < self.timeout:
+            return []
+        late = sorted(self.live - set(self.reports))
+        for s in late:
+            if s not in self.disputes:
+                self.live.discard(s)
+                self.dropped.append(s)
+        return [s for s in late if s not in self.disputes]
+
+    def ready(self) -> bool:
+        return not self.disputes and self.live <= set(self.reports)
+
+    def take_game_end(self) -> Optional[dict]:
+        if self._sent or not self.ready():
+            return None
+        self._sent = True
+        return build_game_end({s: self.expected[s] for s in self.live}, {s: self.coins[s] for s in self.live})
