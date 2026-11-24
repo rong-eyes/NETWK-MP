@@ -119,7 +119,6 @@ class ScoreBreakdown:
         return sum(getattr(self, c) for c in CATEGORIES)
 
     def to_payload(self) -> dict:
-        """The SCORE_REPORT payload (Section 8.3)."""
         d = {c: getattr(self, c) for c in CATEGORIES}
         d["total"] = self.total
         return d
@@ -136,3 +135,52 @@ class ScoreBreakdown:
 
     def diff(self, other: "ScoreBreakdown") -> dict:
         return {c: (getattr(self, c), getattr(other, c)) for c in CATEGORIES if getattr(self, c) != getattr(other, c)}
+
+def science_score(tablet: int, compass: int, gear: int, wild: int = 0) -> int:
+    best = 0
+    for a, b in product(range(wild + 1), repeat=2):
+        if a + b > wild:
+            continue
+        t, c, g = tablet + a, compass + b, gear + (wild - a - b)
+        best = max(best, t * t + c * c + g * g + 7 * min(t, c, g))
+    return best
+
+
+def _count(per: str, seat: int, views: dict, db: CardDB) -> int:
+    v = views[seat]
+    if per == "WONDER_STAGE":
+        return len(v.stage_ages)
+    if per == "DEFEAT":
+        return sum(1 for tok in v.military_tokens if tok == DEFEAT_TOKEN)
+    colours = set(per.split("+"))
+    return sum(1 for c, _ in v.built if db[c].color in colours)
+
+
+def _rule_vp(card: CardInfo, seat: int, views: dict, db: CardDB, ring: list) -> int:
+    vp = card.vp
+    if card.vp_rule:
+        left, right = neighbours(ring, seat)
+        where = {"own": seat, "left": left, "right": right}
+        vp += card.vp_rule["vp"] * sum(_count(card.vp_rule["per"], where[w], views, db)
+                                       for w in card.vp_rule["scope"])
+    return vp
+
+
+def score_seat(seat: int, views: dict, db: CardDB, ring: list) -> ScoreBreakdown:
+    v = views[seat]
+    cards = [db[c] for c, _ in v.built]
+    sym = {"TABLET": 0, "COMPASS": 0, "GEAR": 0, "WILD": 0}
+    for c in cards:
+        if c.science:
+            sym[c.science] += 1
+    sym["WILD"] += sum(v.stages[i].wild_science for i in range(len(v.stage_ages)))
+    return ScoreBreakdown(
+        military=sum(v.military_tokens),
+        treasury=max(v.coins, 0) // 3,
+        wonder=sum(v.stages[i].vp for i in range(len(v.stage_ages))),
+        civilian=sum(c.vp for c in cards if c.color == "BLUE"),
+        scientific=science_score(sym["TABLET"], sym["COMPASS"], sym["GEAR"], sym["WILD"]),
+        commercial=sum(_rule_vp(c, seat, views, db, ring) for c in cards if c.color == "YELLOW"),
+        guilds=sum(_rule_vp(c, seat, views, db, ring) for c in cards if c.color == "PURPLE"),
+    )
+    
