@@ -1,5 +1,8 @@
 import json
 import time
+from dataclasses import dataclass, field
+from itertools import product
+from typing import Callable, Optional
 
 CATEGORIES = ("military", "treasury", "wonder", "civilian", "scientific", "commercial", "guilds")
 VICTORY_TOKEN = {1: 1, 2: 3, 3: 5}    
