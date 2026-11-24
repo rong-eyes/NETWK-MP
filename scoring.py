@@ -113,3 +113,26 @@ class ScoreBreakdown:
     scientific: int = 0
     commercial: int = 0
     guilds: int = 0
+
+    @property
+    def total(self) -> int:
+        return sum(getattr(self, c) for c in CATEGORIES)
+
+    def to_payload(self) -> dict:
+        """The SCORE_REPORT payload (Section 8.3)."""
+        d = {c: getattr(self, c) for c in CATEGORIES}
+        d["total"] = self.total
+        return d
+
+    @staticmethod
+    def from_payload(p: dict) -> "ScoreBreakdown":
+        vals = {}
+        for c in CATEGORIES:
+            v = p.get(c)
+            if not isinstance(v, int) or isinstance(v, bool):
+                raise ValueError(f"SCORE_REPORT field '{c}' missing or not an integer")
+            vals[c] = v
+        return ScoreBreakdown(**vals)
+
+    def diff(self, other: "ScoreBreakdown") -> dict:
+        return {c: (getattr(self, c), getattr(other, c)) for c in CATEGORIES if getattr(self, c) != getattr(other, c)}
