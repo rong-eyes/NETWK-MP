@@ -3,7 +3,7 @@ import hashlib # only used by lobby_id_from_room SHA-256 per RFC 7.2
 import json # UTF-8 JSON required according to RFC section 5
 import struct # structs will be used for the headers
 from dataclasses import dataclass, field # dataclasses provide a shortcut for classes. In CCPROG3 terms, it creates automatic constructors for classes
-from typing import Optional # used later for Packet.payload (none means no payload bytes) !
+from typing import Optional # Optional is a helper to enable certain variables to equal None; used later for Packet.payload (none means no payload bytes) where certain packets are "empty" (bare ACK)
 
 VERSION = 1 # RFC 5: version must be 1; decode() rejects anything else rather than guessing at a future format
 LOBBY_PORT = 7777 # RFC 7.1 default; used only for lobby broadcast, never for the game channels
@@ -91,10 +91,10 @@ class Packet: # a dedicated struct for a packet sent
     seq: int = 0  # 0 = "unreliable, outside the Automatic Repeat Request (ARQ) space"; reliable seqs start at 1, so 0 is a safe in-band marker
     ack: int = 0  # cumulative: highest seq consumed in order, 0 if none
     flags: int = 0  # ACK/RETRANSMIT bits; reserved bits MUST be zero on send, ignored on receipt
-    payload: Optional[dict] = field(default_factory=dict)   # default_factory is mandatory for a mutable default (a bare `= {}` would be shared across instances); None = zero payload bytes (bare ACK), while {} encodes as 2 bytes "{}" !
+    payload: Optional[dict] = field(default_factory=dict) # this means that payload can either contain a dictionary OR nothing (bare ACK); If nothing is passed, then the default payload is a dictionary
     version: int = VERSION  # last on purpose: decode() passes `ver` as the 8th argument
 
-    @property # read-only computed attribute; nothing stored, so it can never drift from `flags` !
+    @property # this gives the Packet an "innate" ability to know if it is an ACK itself; kind of acts like a hypothalamus; you don't have to be explicitly call a function to determine if it is an ACK or not
     def is_ack(self) -> bool: # easily identifies acknowledgement flags; convenience for logs/tests
         return bool(self.flags & FLAG_ACK)  # bool() converts the masked int to True/False
     
