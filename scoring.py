@@ -46,7 +46,7 @@ def shield_total(view: SeatView, db: CardDB, upto_age: int = 3) -> int:
     stages = sum(view.stages[i].shields for i, age in enumerate(view.stage_ages) if age <= upto_age)
     return cards + stages
 
-dataclass
+@dataclass
 class AgeResult:
     shields: int
     vs_left: int     
