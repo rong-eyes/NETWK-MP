@@ -56,6 +56,7 @@ UNRELIABLE_TYPES = LOBBY_TYPES | {M.PING, M.PONG, M.DISCONNECT}
 DIRECTED_TYPES = frozenset({M.HELLO, M.HELLO_ACK, M.HAND_PASS, M.RESOURCE_QUERY, M.RESOURCE_OFFER,
                             M.RESOURCE_BUY, M.PING, M.PONG, M.DIRECT_MESSAGE})
 
+@dataclass
 class Timing:
     t_ack_delay: float = 0.050
     rto_init: float = 0.200
@@ -72,6 +73,7 @@ class Timing:
     t_lobby_quiet: float = 3.0
     t_lobby_timeout: float = 120.0
 
+@dataclass
 class PeerInfo:
     peer_id: int
     display_name: str
@@ -82,6 +84,7 @@ class PeerInfo:
 class MalformedPacket(Exception):
     """Datagram that cannot be parsed"""
 
+@dataclass
 class Packet:
     msg_type: int
     session_id: bytes
