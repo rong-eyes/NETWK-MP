@@ -76,68 +76,66 @@ class Timing:
 class PeerInfo: # dedicated struct for a peer 
     peer_id: int  # manifest ID (1..k), assigned by sorting lobby_peer_ids ascending
     display_name: str  # carried over unchanged from LOBBY_PRESENCE
-    host: str  # the ADVERTISED game-socket host (7.1): connect here, not to the lobby source address
+    host: str  # the advertised game-socket host (7.1): connect here, not to the lobby source address
     port: int  # advertised game-socket port 
 
 
-class MalformedPacket(Exception):
-    """Datagram that cannot be parsed"""
+class MalformedPacket(Exception):  # dedicated type so callers separate "bad remote input" (recoverable, maps to ERROR MALFORMED_MESSAGE) from genuine bugs (ValueError/TypeError)
+    """Datagram that cannot be parsed""" # a docstring 
 
 @dataclass
-class Packet:
-    msg_type: int
-    session_id: bytes
-    sender: int
-    seq: int = 0
-    ack: int = 0
-    flags: int = 0
-    payload: Optional[dict] = field(default_factory=dict)  
-    version: int = VERSION
+class Packet: # a dedicated struct for a packet sent 
+    msg_type: int # plain integer, not MsgType: the bare ACK's type, 0x00, isn't an enum member
+    session_id: bytes  # exactly 16 raw bytes (not hex); encode() does not validate the length
+    sender: int  # 16-bit manifest peer_id, or 0xFFFF if in the lobby
+    seq: int = 0  # 0 = "unreliable, outside the Automatic Repeat Request (ARQ) space"; reliable seqs start at 1, so 0 is a safe in-band marker
+    ack: int = 0  # cumulative: highest seq consumed in order, 0 if none
+    flags: int = 0  # ACK/RETRANSMIT bits; reserved bits MUST be zero on send, ignored on receipt
+    payload: Optional[dict] = field(default_factory=dict)   # default_factory is mandatory for a mutable default (a bare `= {}` would be shared across instances); None = zero payload bytes (bare ACK), while {} encodes as 2 bytes "{}" !
+    version: int = VERSION  # last on purpose: decode() passes `ver` as the 8th argument
 
-    @property
-    def is_ack(self) -> bool:
-        return bool(self.flags & FLAG_ACK)
+    @property # read-only computed attribute; nothing stored, so it can never drift from `flags` !
+    def is_ack(self) -> bool: # easily identifies acknowledgement flags; convenience for logs/tests
+        return bool(self.flags & FLAG_ACK)  # bool() converts the masked int to True/False
     
-    @property
-    def is_retransmit(self) -> bool:
-        return bool(self.flags & FLAG_RETRANSMIT)
+    @property # read-only computed attribute;
+    def is_retransmit(self) -> bool: # lets verbose mode and tests spot retransmissions
+        return bool(self.flags & FLAG_RETRANSMIT) # purely informational; deduplication should not rely on this flag, instead it should rely on the SEQ number
+def lobby_id_from_room(room_code: str) -> bytes: # RFC 7.2: lobby_id == session_id for the life of the exchange; think of this like a VIP badge maker
+    return hashlib.sha256(room_code.encode("utf-8")).digest()[:16] # .digest() = converts into 32 raw bytes, [:16] keeps 128 bits or 16 bytes; low-entropy room codes are guessable (RFC 12.5), and the same code always gives the same ID (RFC 12.6)
 
-def lobby_id_from_room(room_code: str) -> bytes:
-    return hashlib.sha256(room_code.encode("utf-8")).digest()[:16]
+def encode(pkt: Packet) -> bytes:  # function that literally encodes packets to be securely shipped across the network
+    body = b"" if pkt.payload is None else json.dumps(  # b"" means <bytes><empty>, which happens if the packet is a bare ACK, otherwise 
+        pkt.payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")  # we use commas and colons as separators to save space; ensure_ascii=False ensure that all non-ascii can travel freely;
+    data = HEADER.pack(pkt.version, int(pkt.msg_type), pkt.flags & 0xFF, 0, pkt.session_id,  # int() flattens the message to ensure an integer gets "header-ed"; 0xFF ensures that unexpected flags >255 will be trimmed; add a 0 to follow what the RFC says; 
+                       pkt.sender, len(body), pkt.seq, pkt.ack) + body  # add the sender, body length, SEQ, ACK, and the body itself
+    if len(data) > MAX_DATAGRAM:  # check if the packet exceeds our maximum; checked after building because the JSON size is unknown until dumps() runs
+        raise ValueError(f"datagram is {len(data)} bytes, limit is {MAX_DATAGRAM}")  # ValueError on purpose, unlike MalformedPacket; the RFC says split into several messages, but this code refuses instead
+    return data  # bytes ready for sock.sendto
 
-
-def encode(pkt: Packet) -> bytes:
-    body = b"" if pkt.payload is None else json.dumps(
-        pkt.payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
-    data = HEADER.pack(pkt.version, int(pkt.msg_type), pkt.flags & 0xFF, 0, pkt.session_id,
-                       pkt.sender, len(body), pkt.seq, pkt.ack) + body
-    if len(data) > MAX_DATAGRAM:
-        raise ValueError(f"datagram is {len(data)} bytes, limit is {MAX_DATAGRAM}")
-    return data
-
-def decode(data: bytes) -> Packet:
-    if len(data) < HEADER_SIZE:
-        raise MalformedPacket(f"datagram too short ({len(data)} bytes)")
-    ver, mtype, flags, _reserved, sid, sender, plen, seq, ack = HEADER.unpack_from(data)
-    if ver != VERSION:
-        raise MalformedPacket(f"unsupported version {ver}")
-    if plen != len(data) - HEADER_SIZE:
-        raise MalformedPacket(f"payload length {plen} != {len(data) - HEADER_SIZE} bytes present")
-    if mtype == TYPE_BARE_ACK:
-        if not flags & FLAG_ACK or plen:
-            raise MalformedPacket("type 0x00 must be an ACK-flagged datagram with empty payload")
-        return Packet(TYPE_BARE_ACK, sid, sender, seq, ack, flags, None, ver)
-    try:
-        msg_type = MsgType(mtype)
-    except ValueError:
-        raise MalformedPacket(f"unknown message type 0x{mtype:02x}") from None
-    try:
-        payload = json.loads(data[HEADER_SIZE:].decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise MalformedPacket(f"bad JSON payload: {exc}") from None
-    if not isinstance(payload, dict):
-        raise MalformedPacket("payload is not a JSON object")
-    return Packet(msg_type, sid, sender, seq, ack, flags, payload, ver)
+def decode(data: bytes) -> Packet:  # function for decoding data; runs on untrusted network input, so every failure must become MalformedPacket
+    if len(data) < HEADER_SIZE: # The header size is the smallest packet we could ever receive, therfore receiving packet less than that is obviously a malformed packet
+        raise MalformedPacket(f"datagram too short ({len(data)} bytes)")  # raise a malformed packet error
+    ver, mtype, flags, _reserved, sid, sender, plen, seq, ack = HEADER.unpack_from(data)  # unpack_from reads in place with no slice copy and tolerates trailing bytes (unpack would not); `_reserved` is discarded per RFC, and unknown flag bits pass through untouched
+    if ver != VERSION:  # check for an appropriate version
+        raise MalformedPacket(f"unsupported version {ver}")  # reject rather than best-effort parse
+    if plen != len(data) - HEADER_SIZE:  # UDP preserves datagram boundaries, so a mismatch means truncation, corruption, or trailing junk; strict equality rejects all three
+        raise MalformedPacket(f"payload length {plen} != {len(data) - HEADER_SIZE} bytes present")  # the message gives both numbers for debugging
+    if mtype == TYPE_BARE_ACK:  # check if the packet is a bare ACK (payload is 0); handled before MsgType() lookup, which would raise ValueError for 0
+        if not flags & FLAG_ACK or plen:  # precedence: `&` binds tighter than `not`, so this is (not (flags & FLAG_ACK)) or plen; a bare ACK must carry the ACK flag and an empty payload
+            raise MalformedPacket("type 0x00 must be an ACK-flagged datagram with empty payload")  # stops a type-0 datagram from being treated as a free-form message
+        return Packet(TYPE_BARE_ACK, sid, sender, seq, ack, flags, None, ver)  # positional args must match field order; payload=None marks "no body"
+    try:  # IntEnum(value) raises ValueError for non-members
+        msg_type = MsgType(mtype)  # converts the raw byte to the enum so downstream code can use .name in logs
+    except ValueError:  # unknown type byte
+        raise MalformedPacket(f"unknown message type 0x{mtype:02x}") from None  # raise a MalformedPacket error; `from None` is used to respond with MalformedError instead of ValueError
+    try:  # parse stage: two different failure modes (bytes -> str, str -> object)
+        payload = json.loads(data[HEADER_SIZE:].decode("utf-8"))  # unpack the JSON file and place it into payload
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:  # catch any errors in decoding
+        raise MalformedPacket(f"bad JSON payload: {exc}") from None  # surface the parser's message (line/column) for verbose logs; Again, "from None" is used to hide other types of error, ensuring that malformedpacket is the error raised
+    if not isinstance(payload, dict):  # check if the payload is valid; valid JSON can still be a list, number, or string; every 7WD payload is an object
+        raise MalformedPacket("payload is not a JSON object")  # raise a malformed packet error if payload turns out invalid
+    return Packet(msg_type, sid, sender, seq, ack, flags, payload, ver)  # return the packet with all its proper attributes
 
 
 
