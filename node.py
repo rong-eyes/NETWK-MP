@@ -127,3 +127,97 @@ class Node:
         verbose.info(f"channel to peer {peer_id} FAILED after {self.t.retry_max} timeouts")
         if self.on_channel_failed:
             self.on_channel_failed(peer_id)
+
+    def _recv_loop(self) -> None:
+        while self._running:
+            try:
+                data, addr = self.sock.recvfrom(2048)
+            except socket.timeout:
+                continue
+            except ConnectionResetError:
+                continue             
+            except OSError:
+                if self._running:
+                    continue
+                break
+            if self.drop_rate and self._rng.random() < self.drop_rate:
+                continue
+            self._handle_datagram(data, addr)
+
+    def _timer_loop(self) -> None:
+        while self._running:
+            for ch in self.channels.values():
+                ch.tick()
+            time.sleep(0.02)
+
+    def _handle_datagram(self, data: bytes, addr: tuple) -> None:
+        try:
+            pkt = decode(data)
+        except MalformedPacket as exc:
+            verbose.info(f"MALFORMED datagram from {addr[0]}:{addr[1]}: {exc}")
+            if self.on_malformed:
+                self.on_malformed(addr, str(exc))
+            return
+        if pkt.session_id != self.session_id or pkt.msg_type in LOBBY_TYPES:
+            return                  
+        ch = self.channels.get(pkt.sender)
+        if ch is None or pkt.sender not in self.live:
+            verbose.info(f"ignoring datagram from unknown/disconnected peer id {pkt.sender}")
+            return
+        verbose.packet("RECV", pkt, f"peer {pkt.sender}")
+        for p in ch.on_packet(pkt):
+            self._dispatch(pkt.sender, p)
+
+    def _dispatch(self, pid: int, pkt: Packet) -> None:
+        t, body = pkt.msg_type, pkt.payload or {}
+        ch = self.channels[pid]
+        if t == MsgType.PING:
+            echo = body.get("sent_at_ms")
+            if isinstance(echo, int):
+                self.send(pid, MsgType.PONG, {"echo_sent_at_ms": echo})  
+            else:
+                self._malformed(pid, "PING without integer sent_at_ms")
+        elif t == MsgType.PONG:
+            echo = body.get("echo_sent_at_ms")
+            if isinstance(echo, int):
+                rtt = max((time.monotonic_ns() // 1_000_000 - echo) / 1000.0, 0.0005)
+                ch.note_rtt(rtt)
+                ch.last_pong = time.monotonic()
+                self.inbox.put(Incoming(pid, MsgType.PONG, body, pkt))
+            else:
+                self._malformed(pid, "PONG without integer echo_sent_at_ms")
+        elif t == MsgType.HELLO:
+            self._send_hello(pid)                   
+            self.send(pid, MsgType.HELLO_ACK, {})
+        elif t == MsgType.HELLO_ACK:
+            with self._cond:
+                self._hello_acked.add(pid)
+                self._cond.notify_all()
+        else:
+            self.inbox.put(Incoming(pid, MsgType(t), body, pkt))
+
+    def _malformed(self, pid: int, reason: str) -> None:
+        verbose.info(f"MALFORMED payload from peer {pid}: {reason}")
+        if self.on_malformed:
+            self.on_malformed((self.manifest[pid].host, self.manifest[pid].port), reason)
+
+    def _send_hello(self, pid: int) -> None:
+        with self._cond:
+            if pid in self._hello_sent:
+                return
+            self._hello_sent.add(pid)
+        self.send(pid, MsgType.HELLO, {})
+
+    def handshake(self, timeout: Optional[float] = None) -> set:
+        
+        timeout = self.t.t_join_timeout if timeout is None else timeout
+        for pid in self.peer_ids:
+            self._send_hello(pid)
+        deadline = time.monotonic() + timeout
+        with self._cond:
+            while not set(self.peer_ids) <= self._hello_acked:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    break
+                self._cond.wait(left)
+            return set(self._hello_acked)
